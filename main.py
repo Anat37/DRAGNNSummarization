@@ -44,6 +44,12 @@ class NetState():
                 return c.get_full(module_name)
         return None
     
+    def get_all(self, name):
+        for c in self.components:
+            if c.name == name:
+                return c.get_all()
+        return None
+    
     def get_last(self, name):
         for c in self.components:
             if c.name == name:
@@ -61,6 +67,7 @@ class ComponentLayerState():
         self.name = name
         self.is_solid = is_solid
         self.reset()
+        self.hiddens = []
         
     def reset(self):
         self.pos = {}
@@ -82,6 +89,9 @@ class ComponentLayerState():
             return self.hiddens
         else:
             return None
+    
+    def get_all(self):
+        return self.hiddens
     
     def add(self, token):
         if self.is_solid:
@@ -151,6 +161,7 @@ class EmbeddingComputer(nn.Module):
         super().__init__()
         
         self._embed = nn.Embedding(vocab_size, hidden_size)
+        self._vocab_size = vocab_size
 
     def forward(self, state, input_token):
         if input_token is None:
@@ -238,7 +249,15 @@ class DRAGNNMaster(nn.Module):
         self.net.reset()
         self.net.add_layer(input_layer)
         self.prepare_net(self.net)
-        
+    
+    def format_output(self, output):
+        if not isinstance(output, list):
+            return output
+        else:
+            output = torch.stack(output)
+            output.requires_grad_()
+            return output
+    
     def forward(self, input_layer):
         self.build_net(input_layer)
         for c in self._modules:
@@ -247,13 +266,7 @@ class DRAGNNMaster(nn.Module):
             while hidden is not None:
                 state, hidden = module(state, self.net)
                 
-        output = self.net.components[-1].hiddens
-        if self.net.components[-1].is_solid:
-            return output
-        else:
-            output = torch.stack(output)
-            output.requires_grad_()
-            return output
+        return self.format_output(self.net.components[-1].hiddens)
     
     def save_model(self, filename):
         torch.save(self.state_dict(), filename)
