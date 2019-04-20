@@ -166,6 +166,7 @@ class EmbeddingComputer(nn.Module):
     def forward(self, state, input_token):
         if input_token is None:
             return state, None
+        print(input_token.shape)
         hidden = self._embed(input_token)
         return state, hidden
     
