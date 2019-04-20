@@ -109,12 +109,14 @@ class LSTMEncoderRecurrent():
                 hidden = net.get_last(self._input_hidden_layer)
         else:
             hidden = net.get_last(self._self_name)
+            if not is_solid:
+                hidden = hidden.squeeze(0)
         
         if is_solid:
             inputs = net.get_full(self._input_layer, self._self_name)
         else:
             inputs = net.get_last(self._input_layer)
-            hidden.squeeze(0)
+            
         return (inputs, hidden)
     
     
@@ -140,12 +142,13 @@ class AdditiveAttentiveLSTMEncoderRecurrent(nn.Module):
                 hidden = net.get_last(self._input_hidden_layer)
         else:
             hidden = net.get_last(self._self_name)
+            if not is_solid:
+                hidden = hidden.squeeze(0)
         
         if is_solid:
             inputs = net.get_full(self._input_layer, self._self_name)
         else:
             inputs = net.get_last(self._input_layer)
-            hidden.squeeze(0)
         
         if inputs is None:
             return (None, None)
@@ -162,5 +165,5 @@ class AdditiveAttentiveLSTMEncoderRecurrent(nn.Module):
             result = torch.stack(result)
         else:
             result = result[0].unsqueeze(0)
-            print(inputs.shape)
+            #print(inputs.shape)
         return (torch.cat((result, inputs), -1), hidden)
