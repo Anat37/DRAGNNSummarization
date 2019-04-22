@@ -18,7 +18,7 @@ class PointerTBRU(nn.Module):
         self._energy_layer = nn.Linear(hidden_dim, 1)
         self._hidden_dim = hidden_dim
        
-        self._rnn = nn.LSTM(hidden_dim + key_size, hidden_dim)
+        self._rnn = nn.LSTM(query_size + key_size, hidden_dim)
         self._state = None
 
     def forward(self, state, net):
@@ -74,4 +74,29 @@ class PointerTBRU(nn.Module):
     def create_layer(self, net):
         comp_layer = ComponentLayerState(self.name, self.is_solid)
         net.add_layer(comp_layer)
+        
+        
+class BeamSearchProviderTBRU(nn.Module):
+    def __init__(self, name, input_layer, working_layer, is_first, is_solid):
+        super().__init__()
+        
+        self.is_solid = is_solid
+        self.name = name
+        self._rec = TaggerRecurrent(input_layer, name, is_first)
+        self._rec._input_layer = input_layer
+        self._rec._is_first = is_first
+        self.state_shape = state_shape
+        self._rec = recurrent
+        self._comp = computer
+
+    def forward(self, state, net):
+        state, hidden = self._comp(state, (self._rec.get(state, net, self.is_solid)))
+        if hidden is not None:
+            net.add(hidden, self.name)
+        return state, hidden
+    
+    def create_layer(self, net):
+        comp_layer = ComponentLayerState(self.name, self.is_solid)
+        net.add_layer(comp_layer)
+
         
