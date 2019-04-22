@@ -227,6 +227,9 @@ class TBRU(nn.Module):
             net.add(hidden, self.name)
         return state, hidden
     
+    def create_layer(self, net):
+        comp_layer = ComponentLayerState(self.name, self.is_solid)
+        net.add_layer(comp_layer)
 
 class DRAGNNMaster(nn.Module):
     def __init__(self):
@@ -239,8 +242,7 @@ class DRAGNNMaster(nn.Module):
 
     def prepare_net(self, net):
         for c in self._modules:
-            comp_layer = ComponentLayerState(self._modules[c].name, self._modules[c].is_solid)
-            net.add_layer(comp_layer)
+            self._modules[c].create_layer(net)
         return net
     
     def build_net(self, input_layer):
