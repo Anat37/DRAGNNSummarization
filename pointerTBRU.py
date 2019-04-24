@@ -128,7 +128,9 @@ class PointerTBRU(nn.Module):
         self.state_shape = state_shape
         
         self._input_hidden_layer = input_hidden_layer
-        self._rec = TaggerRecurrent(input_layer, name, is_first)
+        self._is_first = is_first
+        self._input_layer = input_layer
+        self._rec = TaggerRecurrent(None, name, True)
         
         self._query_layer = nn.Linear(query_size, hidden_dim)
         self._key_layer = nn.Linear(key_size, hidden_dim)
@@ -138,11 +140,13 @@ class PointerTBRU(nn.Module):
         self._rnn = nn.LSTM(query_size + key_size, hidden_dim)
 
     def forward(self, state, net):
+        if self._is_first:
+            self._input_layer = self._rec._input_layer
         
         if self.is_solid:
-            inputs = net.get_full(self._rec._input_layer, self.name)
+            inputs = net.get_full(self._input_layer, self.name)
         else:
-            inputs = net.get_last(self._rec._input_layer)
+            inputs = net.get_last(self._input_layer)
         
         if inputs is None:
             return (state, None)
@@ -150,7 +154,9 @@ class PointerTBRU(nn.Module):
         query_value = self._query_layer(query)
         key_value = self._key_layer(inputs)
         result = []
-        attentions = []
+        distribs = []
+        words = self._rec.get(state, net, True)
+        max_id = words.max()
         for i in range(key_value.size(0)):
             relevance = query_value + key_value[i]
             relevance = self._energy_layer(torch.tanh(relevance))
@@ -159,6 +165,7 @@ class PointerTBRU(nn.Module):
             result.append((f_att * query).sum(0))
         if self.is_solid:
             result = torch.stack(result)
+            attentions = torch.stack(attentions)
         else:
             result = result[0].unsqueeze(0)
             #print(inputs.shape)
