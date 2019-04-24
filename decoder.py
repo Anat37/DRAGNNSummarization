@@ -1,4 +1,5 @@
 from main import *
+from pointerTBRU import *
 
 class DRAGNNDecoderMaster(DRAGNNMaster):
     def __init__(self):
@@ -52,8 +53,11 @@ class DRAGNNDecoderMaster(DRAGNNMaster):
         self.net.add_layer(target_layer)   
         return self.forward(self.decoder_list[-1].name)
     
-    def eval_run_encoder(self, input_layer): #TODO
-        self.decoder_input_layer = InputLayerState("decoder_input_layer", False, [])
+    def eval_run_encoder(self, input_layer, beam_search = True): #TODO
+        if beam_search:
+            self.decoder_input_layer = InputLayerWithBeamState("decoder_input_layer_beam", False, [], [])
+        else:
+            self.decoder_input_layer = InputLayerState("decoder_input_layer", False, [])
         
         for module in self.decoder_list:
             module.is_solid = False

@@ -67,7 +67,6 @@ class ComponentLayerState():
         self.name = name
         self.is_solid = is_solid
         self.reset()
-        self.hiddens = []
         
     def reset(self):
         self.pos = {}
@@ -101,6 +100,11 @@ class ComponentLayerState():
             
     def get_last(self):
         return self.hiddens[-1]
+    
+    def rearrange_last(self, ids):
+        new_hiddens = torch.index_select(self.hiddens[-1], 0, ids)
+        self.hiddens.pop(-1)
+        self.hiddens.append(new_hiddens)
             
 class InputLayerState(ComponentLayerState):
     def __init__(self, name, is_solid, inputs):
@@ -157,10 +161,10 @@ class TaggerComputer(nn.Module):
         return state, hidden
     
 class EmbeddingComputer(nn.Module):
-    def __init__(self, vocab_size, hidden_size):
+    def __init__(self, vocab_size, hidden_size, pad_idx):
         super().__init__()
         
-        self._embed = nn.Embedding(vocab_size, hidden_size)
+        self._embed = nn.Embedding(vocab_size, hidden_size, padding_idx = pad_idx)
         self._vocab_size = vocab_size
 
     def forward(self, state, input_token):
@@ -208,7 +212,7 @@ class TaggerRecurrent():
                 inputs = torch.stack(inputs)
                 inputs.requires_grad_()
         else:
-            inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)       
+            inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)   
         return inputs
     
 class TBRU(nn.Module):
@@ -223,6 +227,7 @@ class TBRU(nn.Module):
 
     def forward(self, state, net):
         state, hidden = self._comp(state, (self._rec.get(state, net, self.is_solid)))
+  
         if hidden is not None:
             net.add(hidden, self.name)
         return state, hidden
