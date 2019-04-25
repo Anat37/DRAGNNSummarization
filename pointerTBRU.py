@@ -26,31 +26,140 @@ class LSTMState(ComponentLayerState):
         self.states.pop(-1)
         self.states.append(new_states)
         
+class AttentionState(ComponentLayerState):
+        
+    def reset(self):
+        super().reset()
+        self.attentions = []
+        
+    def add(self, token):
+        token, attentions = token
+        if self.is_solid:
+            self.hiddens = token
+            self.attentions = attentions
+        else:
+            self.hiddens.append(token.squeeze(0))
+            self.attentions.append(distrib)
+        
+    def get_last_attention(self):
+        return self.attentions[-1]
+    
+    def get_full_attention(self):
+        return self.attentions
+    
+    def rearrange_last(self, ids):
+        super().rearrange_last(ids)
+        new_hiddens = torch.index_select(self.attentions[-1], 0, ids)
+        self.attentions.pop(-1)
+        self.attentions.append(new_hiddens)
+        
 class PonterLSTMState(LSTMState):
         
     def reset(self):
         super().reset()
         self.distrib = []
+        self.pgen = []
         
     def add(self, token):
-        token, state, distrib = token
+        token, state, distrib, pgen = token
         if self.is_solid:
             self.hiddens = token
             self.states.append(state)
             self.distrib = distrib
+            self.pgen = pgen
         else:
             self.hiddens.append(token.squeeze(0))
             self.states.append(state)
             self.distrib.append(distrib)
+            self.pgen.append(pgen)
         
     def get_last_distrib(self):
         return self.distrib[-1]
+    
+    def get_last_pgen(self):
+        return self.pgen[-1]
+    
+    def get_full_distrib(self):
+        return self.distrib
+    
+    def get_full_pgen(self):
+        return self.pgen
     
     def rearrange_last(self, ids):
         super().rearrange_last(ids)
         new_hiddens = torch.index_select(self.distrib[-1], 0, ids)
         self.distrib.pop(-1)
         self.distrib.append(new_hiddens)
+        new_hiddens = torch.index_select(self.pgen[-1], 0, ids)
+        self.pgen.pop(-1)
+        self.pgen.append(new_hiddens)
+        
+class AttentionTBRU(nn.Module):
+    def __init__(self, name, state_shape, is_solid, query_size, key_size, hidden_dim, input_hidden_layer, input_layer, is_first):
+        super().__init__()
+        
+        self.is_solid = is_solid
+        self.name = name
+        self.state_shape = state_shape
+        
+        self._input_hidden_layer = input_hidden_layer
+        self._rec = TaggerRecurrent(input_layer, name, is_first)
+        
+        self._query_layer = nn.Linear(query_size, hidden_dim)
+        self._key_layer = nn.Linear(key_size, hidden_dim)
+        self._energy_layer = nn.Linear(hidden_dim, 1)
+        self._hidden_dim = hidden_dim
+       
+        self._rnn = nn.LSTM(query_size + key_size, hidden_dim)
+
+    def forward(self, state, net):
+        
+        if self.is_solid:
+            inputs = net.get_full(self._rec._input_layer, self.name)
+        else:
+            inputs = net.get_last(self._rec._input_layer)
+        
+        if inputs is None:
+            return (state, None)
+        query = net.get_all(self._input_hidden_layer)
+        query_value = self._query_layer(query)
+        key_value = self._key_layer(inputs)
+        result = []
+        for i in range(key_value.size(0)):
+            relevance = query_value + key_value[i]
+            relevance = self._energy_layer(torch.tanh(relevance))
+            f_att = F.softmax(relevance, 0)
+            result.append((f_att * query).sum(0))
+        if self.is_solid:
+            result = torch.stack(result)
+        else:
+            result = result[0].unsqueeze(0)
+            #print(inputs.shape)
+            
+        inputs = torch.cat((result, inputs), -1)
+        
+        if state == 0:
+            if self._input_hidden_layer is None:
+                hidden = None
+            else:
+                hidden = net.get_last(self._input_hidden_layer).unsqueeze(0)
+                cstate = inputs.new_zeros((1, inputs.shape[1], self._hidden_dim))
+                hidden = (hidden, cstate)
+        else:
+            hidden = net.get_last(self.name).unsqueeze(0)
+            cstate = ((net.get_layer(self.name)).get_last_state())
+            hidden = (hidden, cstate)
+
+        #print(input_token.shape)
+        output, (hidden, cstate) = self._rnn(inputs, hidden)
+        
+        if output is not None:
+            net.add((output, cstate), self.name)
+        return state, output
+    
+    def create_layer(self, net):
+        comp_layer = AttentionState(self.name, self.is_solid)
+        net.add_layer(comp_layer)  
 
 class AttentiveLSTMTBRU(nn.Module):
     def __init__(self, name, state_shape, is_solid, query_size, key_size, hidden_dim, input_hidden_layer, input_layer, is_first):
@@ -128,9 +237,7 @@ class PointerTBRU(nn.Module):
         self.state_shape = state_shape
         
         self._input_hidden_layer = input_hidden_layer
-        self._is_first = is_first
-        self._input_layer = input_layer
-        self._rec = TaggerRecurrent(None, name, True)
+        self._rec = TaggerRecurrent(input_layer, name, is_first)
         
         self._query_layer = nn.Linear(query_size, hidden_dim)
         self._key_layer = nn.Linear(key_size, hidden_dim)
@@ -140,13 +247,10 @@ class PointerTBRU(nn.Module):
         self._rnn = nn.LSTM(query_size + key_size, hidden_dim)
 
     def forward(self, state, net):
-        if self._is_first:
-            self._input_layer = self._rec._input_layer
-        
         if self.is_solid:
-            inputs = net.get_full(self._input_layer, self.name)
+            inputs = net.get_full(self._rec._input_layer, self.name)
         else:
-            inputs = net.get_last(self._input_layer)
+            inputs = net.get_last(self._rec._input_layer)
         
         if inputs is None:
             return (state, None)
@@ -155,8 +259,6 @@ class PointerTBRU(nn.Module):
         key_value = self._key_layer(inputs)
         result = []
         distribs = []
-        words = self._rec.get(state, net, True)
-        max_id = words.max()
         for i in range(key_value.size(0)):
             relevance = query_value + key_value[i]
             relevance = self._energy_layer(torch.tanh(relevance))
@@ -168,6 +270,7 @@ class PointerTBRU(nn.Module):
             attentions = torch.stack(attentions)
         else:
             result = result[0].unsqueeze(0)
+            attentions = attentions[0]
             #print(inputs.shape)
             
         inputs = torch.cat((result, inputs), -1)
@@ -188,7 +291,7 @@ class PointerTBRU(nn.Module):
         output, (hidden, cstate) = self._rnn(inputs, hidden)
         
         if output is not None:
-            net.add((output, cstate, None), self.name)
+            net.add((output, cstate, attentions), self.name)
         return state, output
     
     def create_layer(self, net):
