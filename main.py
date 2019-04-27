@@ -214,28 +214,39 @@ class TaggerRecurrent():
         else:
             inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)   
         return inputs
-    
-class TBRU(nn.Module):
-    def __init__(self, name, recurrent, computer, state_shape, is_solid):
+
+class AbstractTBRU(nn.Module):
+    def __init__(self, name, state_shape, is_solid, solid_modifiable = True):
         super().__init__()
         
-        self.is_solid = is_solid
-        self.name = name
+        self._is_solid = is_solid
         self.state_shape = state_shape
+        self.name = name
+        self._solid_modifiable = solid_modifiable
+    
+    def create_layer(self, net):
+        comp_layer = ComponentLayerState(self.name, self._is_solid)
+        net.add_layer(comp_layer)
+        
+    def set_solid(self, is_solid):
+        if self._solid_modifiable:
+            self._is_solid = is_solid
+    
+class TBRU(AbstractTBRU):
+    def __init__(self, name, recurrent, computer, state_shape, is_solid, solid_modifiable=True):
+        super().__init__(name, state_shape, is_solid, solid_modifiable)
+        
         self._rec = recurrent
         self._comp = computer
 
     def forward(self, state, net):
-        state, hidden = self._comp(state, (self._rec.get(state, net, self.is_solid)))
+        state, hidden = self._comp(state, (self._rec.get(state, net, self._is_solid)))
   
         if hidden is not None:
             net.add(hidden, self.name)
         return state, hidden
-    
-    def create_layer(self, net):
-        comp_layer = ComponentLayerState(self.name, self.is_solid)
-        net.add_layer(comp_layer)
 
+    
 class DRAGNNMaster(nn.Module):
     def __init__(self):
         super().__init__()
