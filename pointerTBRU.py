@@ -159,7 +159,49 @@ class AttentionTBRU(AbstractTBRU):
         if attentions is not None:
             net.add(attentions, self.name)
         return state, attentions
+    
+class CoverageAttentionTBRU(AbstractTBRU):
+    def __init__(self, name, is_solid, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, solid_modifiable=True):
+        super().__init__(name, (1,), is_solid, solid_modifiable)
         
+        self._rec = TaggerRecurrent(input_layer, name, is_first)
+        
+        self._query_linear = nn.Linear(query_size, hidden_dim)
+        self._key_layer = nn.Linear(key_size, hidden_dim)
+        self._energy_linear = nn.Linear(hidden_dim, 1)
+        self._coverage_linear = nn.Linear(1, hidden_dim)
+        self._hidden_dim = hidden_dim
+        self._query_layer = query_layer
+
+    def forward(self, state, net):
+        
+        if self._is_solid:
+            inputs = net.get_full(self._rec._input_layer, self.name)
+        else:
+            inputs = net.get_value_by_name(self._rec._input_layer, 1, self.name)
+            inputs = inputs.unsqueeze(0)
+        
+        if inputs is None:
+            return (state, None)
+        
+        query = net.get_all(self._query_layer)
+        query_value = self._query_linear(query)
+        key_value = self._key_layer(inputs)
+        attentions = []
+        for i in range(key_value.size(0)):
+            relevance = query_value + key_value[i]
+            relevance = self._energy_linear(torch.tanh(relevance))
+            f_att = torch.softmax(relevance, 0)
+            attentions.append(f_att.squeeze(-1))
+        if self._is_solid:
+            attentions = torch.stack(attentions)
+        else:
+            attentions = attentions[0]
+        
+        if attentions is not None:
+            net.add(attentions, self.name)
+        return state, attentions
+    
 class ContextTBRU(AbstractTBRU):
     def __init__(self, name, is_solid, attention_layer, query_layer, is_first, solid_modifiable=True):
         super().__init__(name, (1,), is_solid, solid_modifiable)
@@ -173,13 +215,14 @@ class ContextTBRU(AbstractTBRU):
         if attention is None or query is None:
             return (state, None)
         
+        attention = attention.unsqueeze(-1)
         if self._is_solid:
             result = []
             for i in range(attention.shape[0]):
                 result.append((attention[i] * query).sum(0))
             result = torch.stack(result)
         else:
-            result = (attention[i] * query).sum(0)
+            result = (attention * query).sum(0)
         
         if result is not None:
             net.add(result, self.name)
@@ -259,7 +302,7 @@ class PointerTBRU(AbstractTBRU):
         
         attention = attention.transpose(-2, -1)
         words = words.transpose(-2, -1)
-               
+              
         pgen = self._linear(torch.cat((context, lstm_hiddens, lstm_input), -1))
         pgen = torch.sigmoid(pgen)
         
