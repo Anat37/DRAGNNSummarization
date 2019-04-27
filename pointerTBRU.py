@@ -120,7 +120,7 @@ class ConcatTBRU(AbstractTBRU):
         return state, inputs        
         
 class AttentionTBRU(AbstractTBRU):
-    def __init__(self, name, is_solid, attention_layer, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, solid_modifiable=True):
+    def __init__(self, name, is_solid, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, solid_modifiable=True):
         super().__init__(name, (1,), is_solid, solid_modifiable)
         
         self._rec = TaggerRecurrent(input_layer, name, is_first)
@@ -129,7 +129,6 @@ class AttentionTBRU(AbstractTBRU):
         self._key_layer = nn.Linear(key_size, hidden_dim)
         self._energy_linear = nn.Linear(hidden_dim, 1)
         self._hidden_dim = hidden_dim
-        self._attention_layer = attention_layer
         self._query_layer = query_layer
 
     def forward(self, state, net):
@@ -142,34 +141,49 @@ class AttentionTBRU(AbstractTBRU):
         
         if inputs is None:
             return (state, None)
+        
         query = net.get_all(self._query_layer)
         query_value = self._query_linear(query)
         key_value = self._key_layer(inputs)
-        result = []
         attentions = []
         for i in range(key_value.size(0)):
             relevance = query_value + key_value[i]
             relevance = self._energy_linear(torch.tanh(relevance))
             f_att = torch.softmax(relevance, 0)
-            result.append((f_att * query).sum(0))
             attentions.append(f_att.squeeze(-1))
         if self._is_solid:
-            result = torch.stack(result)
             attentions = torch.stack(attentions)
         else:
-            result = result[0]
             attentions = attentions[0]
+        
+        if attentions is not None:
+            net.add(attentions, self.name)
+        return state, attentions
+        
+class ContextTBRU(AbstractTBRU):
+    def __init__(self, name, is_solid, attention_layer, query_layer, is_first, solid_modifiable=True):
+        super().__init__(name, (1,), is_solid, solid_modifiable)
+        
+        self._rec = TaggerRecurrent(attention_layer, name, is_first)
+        self._query_layer = query_layer
+
+    def forward(self, state, net): 
+        attention = self._rec.get(state, net, self._is_solid)
+        query = net.get_all(self._query_layer)
+        if attention is None or query is None:
+            return (state, None)
+        
+        if self._is_solid:
+            result = []
+            for i in range(attention.shape[0]):
+                result.append((attention[i] * query).sum(0))
+            result = torch.stack(result)
+        else:
+            result = (attention[i] * query).sum(0)
         
         if result is not None:
             net.add(result, self.name)
-            net.add(attentions, self._attention_layer)
         return state, result
-    
-    def create_layer(self, net):
-        comp_layer = ComponentLayerState(self.name, self._is_solid)
-        net.add_layer(comp_layer)
-        comp_layer = ComponentLayerState(self._attention_layer, self._is_solid)
-        net.add_layer(comp_layer)  
 
 class LSTMTBRU(AbstractTBRU):
     def __init__(self, name, is_solid, input_size, hidden_dim, input_hidden_layer, input_layer, is_first, solid_modifiable=True):
