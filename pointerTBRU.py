@@ -161,11 +161,12 @@ class AttentionTBRU(AbstractTBRU):
         return state, attentions
     
 class CoverageAttentionTBRU(AbstractTBRU):
-    def __init__(self, name, is_solid, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, solid_modifiable=True):
+    def __init__(self, name, coverage_layer, is_solid, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, solid_modifiable=True):
         super().__init__(name, (1,), is_solid, solid_modifiable)
         
         self._rec = TaggerRecurrent(input_layer, name, is_first)
         
+        self._coverage_layer = coverage_layer
         self._query_linear = nn.Linear(query_size, hidden_dim)
         self._key_layer = nn.Linear(key_size, hidden_dim)
         self._energy_linear = nn.Linear(hidden_dim, 1)
@@ -176,8 +177,10 @@ class CoverageAttentionTBRU(AbstractTBRU):
     def forward(self, state, net):
         
         if self._is_solid:
+            coverage = net.get_full(self._coverage_layer, self.name)
             inputs = net.get_full(self._rec._input_layer, self.name)
         else:
+            coverage = net.get_value_by_name(self._coverage_layer, 1, self.name)
             inputs = net.get_value_by_name(self._rec._input_layer, 1, self.name)
             inputs = inputs.unsqueeze(0)
         
@@ -201,6 +204,12 @@ class CoverageAttentionTBRU(AbstractTBRU):
         if attentions is not None:
             net.add(attentions, self.name)
         return state, attentions
+    
+    def create_layer(self, net):
+        comp_layer = ComponentLayerState(self.name, self._is_solid)
+        net.add_layer(comp_layer)
+        comp_layer = ComponentLayerState(self._coverage_layer, self._is_solid)
+        net.add_layer(comp_layer)
     
 class ContextTBRU(AbstractTBRU):
     def __init__(self, name, is_solid, attention_layer, query_layer, is_first, solid_modifiable=True):
