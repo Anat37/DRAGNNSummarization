@@ -75,17 +75,21 @@ class ComponentLayerState():
     def get(self, index, module_name):
         if not module_name in self.pos:
             self.pos[module_name] = -1
-        if index > 0:
-            self.pos[module_name] += 1
-            if self.pos[module_name] >= len(self.hiddens):
+        if index > 0: 
+            if self.pos[module_name] + 1 >= len(self.hiddens):
                 return None
             else:
+                self.pos[module_name] += 1
                 return self.hiddens[self.pos[module_name]]
     
     def get_full(self, module_name):
         if not module_name in self.pos:
-            self.pos[module_name] = len(self.hiddens)
-            return self.hiddens
+            self.pos[module_name] = -1
+            
+        if self.pos[module_name] < len(self.hiddens) - 1:
+            result = self.hiddens[self.pos[module_name] + 1: len(self.hiddens)]
+            self.pos[module_name] = len(self.hiddens) - 1
+            return result
         else:
             return None
     
@@ -101,8 +105,8 @@ class ComponentLayerState():
     def get_last(self):
         return self.hiddens[-1]
     
-    def rearrange_last(self, ids):
-        new_hiddens = torch.index_select(self.hiddens[-1], 0, ids)
+    def rearrange_last(self, ids, dim = 0):
+        new_hiddens = torch.index_select(self.hiddens[-1], dim, ids)
         self.hiddens.pop(-1)
         self.hiddens.append(new_hiddens)
             

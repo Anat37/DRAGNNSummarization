@@ -24,6 +24,12 @@ class DRAGNNDecoderMaster(DRAGNNMaster):
             state, hidden = module(np.zeros(module.state_shape), self.net)
             while hidden is not None:
                 state, hidden = module(state, self.net)
+                
+    def forward_decoder(self):
+        for module in self.decoder_list:
+            state, hidden = module(0, self.net)
+            while hidden is not None:
+                state, hidden = module(1, self.net)
     
     def step_decoder(self):
         hidden = None
@@ -40,6 +46,7 @@ class DRAGNNDecoderMaster(DRAGNNMaster):
             hidden = self.step_decoder()
             if hidden is None:
                 break
+        #self.forward_decoder()
         
         return self.format_output(self.net.get_layer(output_layer_name).hiddens)
         
