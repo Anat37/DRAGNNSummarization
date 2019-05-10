@@ -68,6 +68,36 @@ class PonterLSTMState(LSTMState):
         self.pgen.pop(-1)
         self.pgen.append(new_hiddens)
         
+class HorizontalRecurrent():
+    def __init__(self, input_name, self_name, is_first):
+        super().__init__()
+        
+        self._input_layer = input_name
+        self._self_name = self_name
+        self._is_first = is_first
+    
+    def get_simple(self, state, net, is_solid):
+        if is_solid:
+            inputs = net.get_full(self._input_layer, self._self_name)
+            if isinstance(inputs, list):
+                inputs = torch.stack(inputs)
+                inputs.requires_grad_()
+        else:
+            inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)
+        return inputs
+        
+    def get(self, state, net, is_solid, batch_size, hidden_size):
+        input_layer = net.get_layer(self._input_layer)
+        #print(input_layer.hiddens)
+        inputs = self.get_simple(state, net, is_solid)
+        if state == 0 and inputs is None:
+            inputs = torch.cuda.FloatTensor(batch_size, hidden_size).fill_(0)
+            input_layer.add(inputs)
+            inputs = self.get_simple(state, net, is_solid)
+        
+        #print(inputs)
+        return inputs
+        
 class ConcatTBRU(AbstractTBRU):
     def __init__(self, name, is_solid, input_layer, second_layer, is_first, solid_modifiable=True):
         super().__init__(name, (1,), is_solid, solid_modifiable)
@@ -88,7 +118,34 @@ class ConcatTBRU(AbstractTBRU):
      
         if inputs is not None:
             net.add(inputs, self.name)
-        return state, inputs        
+        return state, inputs
+    
+class ConcatStateTBRU(AbstractTBRU):
+    def __init__(self, name, is_solid, input_layer, second_layer, hidden_dim, is_first, solid_modifiable=True):
+        super().__init__(name, (1,), is_solid, solid_modifiable)
+        
+        self._rec = TaggerRecurrent(input_layer, name, is_first)
+        self._rec2 = HorizontalRecurrent(second_layer, name, False)
+        self._hidden_dim = hidden_dim
+
+    def forward(self, state, net):
+        inputs1 = self._rec.get(state, net, self._is_solid)
+        
+        if inputs1 is None:
+            return (state, None)
+        
+        if not self._is_solid:
+            if inputs1.dim() < 3:
+                inputs1 = inputs1.unsqueeze(0)
+        inputs2 = self._rec2.get(state, net, self._is_solid, inputs1.shape[1], self._hidden_dim).unsqueeze(0)
+        
+        #print(inputs1.shape)
+        #print(inputs2.shape)
+        inputs = torch.cat((inputs1, inputs2), -1)
+     
+        if inputs is not None:
+            net.add(inputs, self.name)
+        return state, inputs
         
 class AttentionTBRU(AbstractTBRU):
     def __init__(self, name, is_solid, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, solid_modifiable=True):
@@ -150,22 +207,25 @@ class CoverageAttentionTBRU(AbstractTBRU):
         self._hidden_dim = hidden_dim
         self._query_layer = query_layer
         self._query_value = None
+        self._coverage = HorizontalRecurrent(coverage_layer, name, False)
 
     def forward(self, state, net):
         
         query = net.get_all(self._query_layer)
         if self._is_solid:
-            coverage = query.new_zeros((query.shape[0], query.shape[1], 1))
+            #coverage = query.new_zeros((query.shape[0], query.shape[1], 1))
             inputs = net.get_full(self._rec._input_layer, self.name)
         else:
-            coverage = net.get_value_by_name(self._coverage_layer, 1, self.name)
-            if coverage is None:
-                coverage = query.new_zeros((query.shape[0], query.shape[1], 1))
-            
+            #coverage = net.get_value_by_name(self._coverage_layer, 1, self.name)
+            #if coverage is None:
+                #coverage = query.new_zeros((query.shape[0], query.shape[1], 1))
+                #net.add(coverage, self._coverage_layer)
             inputs = net.get_value_by_name(self._rec._input_layer, 1, self.name)
         
         if inputs is None:
             return (state, None)
+        
+        coverage = (self._coverage.get(state, net, self._is_solid, query.shape[0], query.shape[1])).unsqueeze(-1)
         
         if not self._is_solid:
             inputs = inputs.unsqueeze(0)
@@ -184,8 +244,7 @@ class CoverageAttentionTBRU(AbstractTBRU):
             relevance = self._energy_linear(torch.tanh(relevance + coverage_feature))            
             f_att = torch.softmax(relevance, 0)
             coverage = coverage + f_att
-            #print(coverage.shape)
-            net.add(coverage, self._coverage_layer)
+            net.add(coverage.squeeze(-1), self._coverage_layer)         
             attentions.append(f_att.squeeze(-1))
         if self._is_solid:
             attentions = torch.stack(attentions)
@@ -236,7 +295,7 @@ class LSTMTBRU(AbstractTBRU):
         self._rec = TaggerRecurrent(input_layer, name, is_first)
         self._state_name = state_name
         self._hidden_dim = hidden_dim
-       
+        self._cstate = HorizontalRecurrent(state_name, name, False)
         self._rnn = nn.LSTM(input_size, hidden_dim)
 
     def forward(self, state, net):
@@ -248,17 +307,19 @@ class LSTMTBRU(AbstractTBRU):
             if inputs.dim() < 3:
                 inputs = inputs.unsqueeze(0)
         
+        #print(inputs.shape)
+        cstate = self._cstate.get(state, net, self._is_solid, inputs.shape[1], self._hidden_dim)
+        cstate = cstate.unsqueeze(0)
         if state == 0:
             if self._input_hidden_layer is None:
                 hidden = None
             else:
                 hidden = net.get_last(self._input_hidden_layer).unsqueeze(0)
-                cstate = inputs.new_zeros((1, inputs.shape[1], self._hidden_dim))
-                hidden = (hidden, cstate)
+                #cstate = inputs.new_zeros((1, inputs.shape[1], self._hidden_dim))
         else:
             hidden = net.get_last(self.name).unsqueeze(0)
-            cstate = ((net.get_layer(self._state_name)).get_last()).unsqueeze(0)
-            hidden = (hidden, cstate)  
+            #cstate = ((net.get_layer(self._state_name)).get_last()).unsqueeze(0)
+        hidden = (hidden, cstate)  
             
         #print(input_token.shape)
         output, (hidden, cstate) = self._rnn(inputs, hidden)
@@ -278,7 +339,7 @@ class LSTMTBRU(AbstractTBRU):
         net.add_layer(comp_layer)
                
 class PointerTBRU(AbstractTBRU):
-    def __init__(self, name, is_solid, input_size, vocab_size, input_attention_layer, input_context_layer, input_distibution_layer, input_decoder_layer, input_encoder_layer, input_lstm_layer, solid_modifiable=True):
+    def __init__(self, name, is_solid, input_size, vocab_size, input_attention_layer, input_context_layer, input_distibution_layer, input_decoder_layer, input_encoder_layer, input_lstm_layer, lstm_state_layer, solid_modifiable=True):
         super().__init__(name, (1,), is_solid, solid_modifiable)
         
         self._input_encoder_layer = input_encoder_layer
@@ -287,7 +348,7 @@ class PointerTBRU(AbstractTBRU):
         self._input_context_layer = input_context_layer
         self._input_decoder_layer = input_decoder_layer
         self._rec = TaggerRecurrent(input_attention_layer, name, False)
-        
+        self._cstate =  HorizontalRecurrent(lstm_state_layer, name, False)
         self._vocab_size = vocab_size
         self._linear = nn.Linear(input_size, 1)
 
@@ -309,19 +370,25 @@ class PointerTBRU(AbstractTBRU):
         if words is None or attention is None or lstm_hiddens is None or context is None or distribs is None or lstm_input is None:
             return state, None
         
+        cstate = self._cstate.get(state, net, self._is_solid, lstm_input.shape[1], lstm_hiddens.shape[-1])
+        #cstate = cstate.unsqueeze(0)
+        
         if not self._is_solid:
             lstm_input = lstm_input.squeeze(0)
         
         attention = attention.transpose(-2, -1)
         words = words.transpose(-2, -1)
-              
-        pgen = self._linear(torch.cat((context, lstm_hiddens, lstm_input), -1))
-        pgen = torch.sigmoid(pgen)
         
         if self._is_solid:
             batch_size = distribs.shape[1]
         else:
             batch_size = distribs.shape[0]
+        
+        pgen = self._linear(torch.cat((context, lstm_hiddens, lstm_input, cstate), -1))
+        #print(pgen)
+        eps = 1e-5
+        eps = torch.ones_like(pgen) * eps
+        pgen = torch.sigmoid(torch.max(pgen,eps))
         
         if distribs.shape[-1] < self._vocab_size:
             if self._is_solid:
@@ -330,12 +397,14 @@ class PointerTBRU(AbstractTBRU):
                 zeros = distribs.new_zeros((batch_size, self._vocab_size - distribs.shape[1]))
             distribs = torch.cat((distribs, zeros), -1)
         
-        vocab_dist = pgen * distribs
+        
+        vocab_dist = (1 - pgen) * torch.softmax(distribs, -1)
+        #vocab_dist = pgen * distribs
         #print(attention.shape)
         #print(pgen.shape)
         #print(words.shape)
         
-        attn_dist = (1 - pgen) * attention
+        attn_dist = pgen * attention
         
         if self._is_solid:
             for i in range(attn_dist.shape[0]):
@@ -379,10 +448,11 @@ class BeamSearchProviderTBRU(AbstractTBRU):
         
         self.working_layer = working_layer
         self._dim = dim
+        self._active = False
         self._rec = TaggerRecurrent(input_layer, name, is_first)
 
     def forward(self, state, net):
-        if self._is_solid or state == 0:
+        if (not self._active) or state == 0:
             return state, None
         input_layer = net.get_layer(self._rec._input_layer)
         work_layer = net.get_layer(self.working_layer)
@@ -392,5 +462,8 @@ class BeamSearchProviderTBRU(AbstractTBRU):
     
     def create_layer(self, net):
         pass
+    
+    def set_beam_search(self, flag):
+        self._active = flag
 
         

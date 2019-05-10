@@ -235,6 +235,9 @@ class AbstractTBRU(nn.Module):
     def set_solid(self, is_solid):
         if self._solid_modifiable:
             self._is_solid = is_solid
+            
+    def set_beam_search(self, flag):
+        pass
     
 class TBRU(AbstractTBRU):
     def __init__(self, name, recurrent, computer, state_shape, is_solid, solid_modifiable=True):
@@ -244,6 +247,7 @@ class TBRU(AbstractTBRU):
         self._comp = computer
 
     def forward(self, state, net):
+        #print(self.name)
         state, hidden = self._comp(state, (self._rec.get(state, net, self._is_solid)))
   
         if hidden is not None:

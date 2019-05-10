@@ -52,6 +52,7 @@ class DRAGNNDecoderMaster(DRAGNNMaster):
         
     def train_run(self, input_layer, target_layer):
         for module in self.decoder_list:
+            module.set_beam_search(False)
             module.set_solid(True)
             if module._rec._is_first:
                 module._rec._input_layer = target_layer.name
@@ -67,6 +68,7 @@ class DRAGNNDecoderMaster(DRAGNNMaster):
             self.decoder_input_layer = InputLayerState("decoder_input_layer", False, [])
         
         for module in self.decoder_list:
+            module.set_beam_search(beam_search)
             module.set_solid(False)
             if module._rec._is_first:
                 module._rec._input_layer = self.decoder_input_layer.name
