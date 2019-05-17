@@ -194,7 +194,7 @@ class AttentionTBRU(AbstractTBRU):
         return state, attentions
     
 class CoverageAttentionTBRU(AbstractTBRU):
-    def __init__(self, name, coverage_layer, is_solid, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, solid_modifiable=True):
+    def __init__(self, name, coverage_layer, is_solid, query_size, key_size, hidden_dim, input_layer, query_layer, is_first, mask_layer=None, solid_modifiable=True):
         super().__init__(name, (1,), is_solid, solid_modifiable)
         
         self._rec = TaggerRecurrent(input_layer, name, is_first)
@@ -207,6 +207,7 @@ class CoverageAttentionTBRU(AbstractTBRU):
         self._hidden_dim = hidden_dim
         self._query_layer = query_layer
         self._query_value = None
+        self._mask_layer = mask_layer
         self._coverage = HorizontalRecurrent(coverage_layer, name, False)
 
     def forward(self, state, net):
@@ -243,6 +244,11 @@ class CoverageAttentionTBRU(AbstractTBRU):
             
             relevance = self._energy_linear(torch.tanh(relevance + coverage_feature))            
             f_att = torch.softmax(relevance, 0)
+            #print(f_att.shape)
+            if not self._mask_layer is None:
+                mask = self._mask_layer.get_all()
+                f_att = f_att * mask
+            #print(f_att.shape)
             coverage = coverage + f_att
             net.add(coverage.squeeze(-1), self._coverage_layer)         
             attentions.append(f_att.squeeze(-1))
@@ -388,7 +394,8 @@ class PointerTBRU(AbstractTBRU):
         #print(pgen)
         eps = 1e-5
         eps = torch.ones_like(pgen) * eps
-        pgen = torch.sigmoid(torch.max(pgen,eps))
+        pgen = torch.sigmoid(pgen)
+        pgen = torch.max(pgen,eps)
         
         if distribs.shape[-1] < self._vocab_size:
             if self._is_solid:
@@ -399,6 +406,7 @@ class PointerTBRU(AbstractTBRU):
         
         
         vocab_dist = (1 - pgen) * torch.softmax(distribs, -1)
+        #print(pgen)
         #vocab_dist = pgen * distribs
         #print(attention.shape)
         #print(pgen.shape)

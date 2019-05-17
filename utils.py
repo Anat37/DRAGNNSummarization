@@ -63,7 +63,7 @@ def generate_summary(article, model, beam_width):
         new_result = []
         for i, s in enumerate(symbols):
             values, indices = hidden[i].topk(beam_width)
-            new_probs.extend(((values + 1) * probs[i]).cpu().detach().tolist())
+            new_probs.extend((values + probs[i]).cpu().detach().tolist())
             for j in range(beam_width):
                 tmp = result[i].tolist()
                 tmp.append(indices[j].item())
@@ -123,15 +123,15 @@ def get_logits2(model, X_batch, decoder_batch):
     result.requires_grad_(True)
     return result
 
-def calc_loss(logits, target):
+def calc_loss(logits, target, mask):
     #print(target.shape)
     #print(logits.shape)
     probs = torch.gather(logits, 2, target.unsqueeze(-1))
-    loss = -torch.log(probs.squeeze(-1))
+    loss = -torch.log(probs.squeeze(-1))*mask
     loss = loss.sum(0)
     return loss.mean()
 
-def do_epoch(model, criterion, data, batch_size, bleu_weights, optimizer=None, cov_loss=False):  
+def do_epoch(model, criterion, data, batch_size, bleu_weights, optimizer=None, cov_loss=False, mask_layer=None):  
     epoch_loss = 0.
     sum_cov_loss = 0.
     bleu = 0.
@@ -141,17 +141,21 @@ def do_epoch(model, criterion, data, batch_size, bleu_weights, optimizer=None, c
     model.train(is_train)
 
     with torch.autograd.set_grad_enabled(is_train):
-        for j, (article_text, target, mask, decoder_inputs) in enumerate(data.generator()):
+        for j, (article_text, target, encoder_mask, target_mask, decoder_inputs) in enumerate(data.generator()):
             batch_cnt =  j + 1
-            X_batch, y_batch, decoder_batch = LongTensor(article_text), LongTensor(target), LongTensor(decoder_inputs)
+            X_batch, y_batch, decoder_batch, target_mask = LongTensor(article_text), LongTensor(target), LongTensor(decoder_inputs), FloatTensor(target_mask)
+            if mask_layer is not None:
+                mask_layer.reset()
+                encoder_mask = FloatTensor(encoder_mask)
+                mask_layer.hiddens = encoder_mask.unsqueeze(-1)
             
             if is_train:
-                logits = get_logits2(model, X_batch, decoder_batch)
+                logits = get_logits(model, X_batch, decoder_batch)
             else:
                 logits = get_logits2(model, X_batch, decoder_batch)
             #print(logits.view(1, -1).shape)
             #loss = criterion(logits.view(-1, logits.shape[-1]), y_batch.view(-1))
-            loss = calc_loss(logits, y_batch)
+            loss = calc_loss(logits, y_batch, target_mask)
             epoch_loss += loss.item()
             #print(epoch_loss)
             coverage_loss = torch.tensor(0., requires_grad=True).cuda()
@@ -166,10 +170,10 @@ def do_epoch(model, criterion, data, batch_size, bleu_weights, optimizer=None, c
                 coverage = model.net.get_layer('coverage_layer').get_all()
                 attention = model.net.get_layer('attention_layer').get_all()
                 for i in range(len(attention)):
-                    coverage_loss = coverage_loss + ((torch.min(attention[i], coverage[i])).sum() / norm_fact)
+                    coverage_loss = coverage_loss + ((torch.min(attention[i], coverage[i]) * target_mask[i]).sum() / norm_fact)
                 sum_cov_loss += coverage_loss.item()
                 #print(coverage_loss._grad)
-                loss += 0.05 * coverage_loss
+                loss += 0.2 * coverage_loss
             
             if is_train:
                 optimizer.zero_grad()
@@ -184,17 +188,17 @@ def do_epoch(model, criterion, data, batch_size, bleu_weights, optimizer=None, c
     return epoch_loss, sum_cov_loss, bleu / batch_cnt, rouge / batch_cnt
 
 def fit(model, criterion, optimizer, train_data, epochs_count=1, 
-        batch_size=16, val_data=None, val_batch_size=None, cov_loss=False):
+        batch_size=16, val_data=None, val_batch_size=None, cov_loss=False, mask_layer=None):
     if not val_data is None and val_batch_size is None:
         val_batch_size = batch_size
         
     bleu_weights = (0.5, 0.5, 0, 0)
     for epoch in range(epochs_count):
         start_time = time.time()
-        train_loss, sum_cov_loss, bleu, rouge = do_epoch(model, criterion, train_data, batch_size, bleu_weights, optimizer, cov_loss)
+        train_loss, sum_cov_loss, bleu, rouge = do_epoch(model, criterion, train_data, batch_size, bleu_weights, optimizer, cov_loss, mask_layer)
         output_info = '\rEpoch {} / {}, Epoch Time = {:.2f}s: Train Loss = {:.4f}: Cov_Loss = {:.4f}, BLEU = {:.4f}, ROUGE = {:.4f}'
         if not val_data is None:
-            val_loss, sum_cov_loss, bleu, rouge = do_epoch(model, criterion, val_data, val_batch_size, bleu_weights, None, False)
+            val_loss, sum_cov_loss, bleu, rouge = do_epoch(model, criterion, val_data, val_batch_size, bleu_weights, None, False, mask_layer)
             epoch_time = time.time() - start_time
             output_info += ', Val Loss = {:.4f}'
             print(output_info.format(epoch+1, epochs_count, epoch_time, train_loss, sum_cov_loss, bleu, rouge, val_loss))

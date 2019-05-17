@@ -97,6 +97,8 @@ def article2ids(article_words, vocab):
             oov_num = oovs.index(w) # This is 0 for the first article OOV, 1 for the second article OOV...
             if oov_num < ADDITIONAL_WORDS:
                 ids.append(vocab.size() + oov_num) # This is e.g. 50000 for the first article OOV, 50001 for the second...
+            else:
+                ids.append(i)
         else:
             ids.append(i)
     return ids, oovs
@@ -106,12 +108,18 @@ def abstract2ids(abstract_words, vocab, article_oovs):
     ids = []
     unk_id = vocab.word2id(UNKNOWN_TOKEN)
     for w in abstract_words.split():
+        if w == SENTENCE_START or w == SENTENCE_END:
+            continue
         i = vocab.word2id(w)
         if i == unk_id: # If w is an OOV word
             if w in article_oovs: # If w is an in-article OOV
                 vocab_idx = vocab.size() + article_oovs.index(w) # Map to its temporary article OOV number
                 if vocab_idx < VOCAB_SIZE + ADDITIONAL_WORDS:
                     ids.append(vocab_idx)
+                else:
+                    ids.append(i)
+            else:
+                ids.append(i)
         else:
             ids.append(i)
     return ids
@@ -168,7 +176,7 @@ def add_padding_for_tagging(articles, targets):
 def calculate_mask(articles):
     mask = (articles == PAD_TOKEN_ID)
     mask = np.logical_xor(mask, np.ones(articles.shape))
-    return mask
+    return np.array(mask, dtype=np.int32)
 
 def get_target(self, article, abstract):
     return [ int(i in abstract and i != UNKNOWN_TOKEN_ID) for i in article]
@@ -200,8 +208,8 @@ class Batcher():
                     
                     target = abstract2ids(abstract_text, vocab, unknown_words_list)
                     tar_len = min(max_target_len, len(target))
-                    target = target[:tar_len - 1]
                     target.append(STOP_DECODING_ID)
+                    target = target[:tar_len]
                     decoder_input = [START_DECODING_ID]
                     decoder_input.extend(abstract2ids(abstract_text, vocab, unknown_words_list))
                     decoder_input = decoder_input[:tar_len]
@@ -222,8 +230,9 @@ class Batcher():
             articles = add_padding(articles)
             targets = add_padding(targets)
             decoder_inputs = add_padding(decoder_inputs)
-            mask = calculate_mask(articles)
-            self.batches.append( (articles, targets, mask, decoder_inputs) )
+            target_mask = calculate_mask(targets)
+            encoder_mask = calculate_mask(articles)
+            self.batches.append( (articles, targets, encoder_mask, target_mask, decoder_inputs) )
         print(len(self.batches))
         print(unknown_words_cnt)
     

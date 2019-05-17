@@ -133,7 +133,7 @@ class RNNComputer(nn.Module):
 
         return state, hidden
     
-class RNNSolidComputer(nn.Module):
+class BILSTMSolidComputer(nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
         
