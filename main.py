@@ -7,60 +7,55 @@ import torch.optim as optim
 
 from torch.cuda import FloatTensor, LongTensor
 
+normal_std = 1e-4
+uniform_mag = 0.2
+
 class NetState():
     def __init__(self):
         self.reset()
         
     def reset(self):
-        self.components = []
+        self.components = dict()
     
     def add_layer(self, component):
-        self.components.append(component)
+        self.last = component
+        self.components[component.name] = component
         
     def has_layer(self, layer_name):
-        for c in self.components:
-            if c.name == layer_name:
-                return True
-        return False
+        return layer_name in self.components
     
     def get_layer(self, layer_name):
-        for c in self.components:
-            if c.name == layer_name:
-                return c
-        return None
+        if layer_name in self.components:
+            return self.components[layer_name]
+        else:
+            return None
             
     def get_outputs(self):
-        return self.components[-1].hiddens
+        return self.last.hiddens
         
     def get_value_by_name(self, name, index, module_name):
-        for c in self.components:
-            if c.name == name:
-                return c.get(index, module_name)
+        if name in self.components:
+            return self.components[name].get(index, module_name)
         return None
             
     def get_full(self, name, module_name):
-        for c in self.components:
-            if c.name == name:
-                return c.get_full(module_name)
+        if name in self.components:
+            return self.components[name].get_full(module_name)
         return None
     
     def get_all(self, name):
-        for c in self.components:
-            if c.name == name:
-                return c.get_all()
+        if name in self.components:
+            return self.components[name].get_all()
         return None
     
     def get_last(self, name):
-        for c in self.components:
-            if c.name == name:
-                return c.get_last()
+        if name in self.components:
+            return self.components[name].get_last()
         return None
         
     def add(self, hidden, name):
-        for c in self.components:
-            if c.name == name:
-                c.add(hidden)
-                return
+        if name in self.components:
+            self.components[name].add(hidden)
         
 class ComponentLayerState():
     def __init__(self, name, is_solid):
@@ -103,7 +98,10 @@ class ComponentLayerState():
             self.hiddens.append(token)
             
     def get_last(self):
-        return self.hiddens[-1]
+        if len(self.hiddens) > 0:
+            return self.hiddens[-1]
+        else:
+            return None
     
     def rearrange_last(self, ids, dim = 0):
         new_hiddens = torch.index_select(self.hiddens[-1], dim, ids)
@@ -216,7 +214,10 @@ class TaggerRecurrent():
                 inputs = torch.stack(inputs)
                 inputs.requires_grad_()
         else:
-            inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)   
+            inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)
+        #if self._self_name == "bilstm_reduced":
+            #print("bilstm_reduced")
+            #print(inputs.shape)
         return inputs
 
 class AbstractTBRU(nn.Module):
@@ -269,12 +270,14 @@ class DRAGNNMaster(nn.Module):
             self._modules[c].create_layer(net)
         return net
     
-    def build_net(self, input_layer):
+    def build_net(self, input_layer_list):
         if self.net is not None:
             del self.net
             self.net = NetState()
         self.net.reset()
-        self.net.add_layer(input_layer)
+        for layer in input_layer_list:
+            self.net.add_layer(layer)
+        
         self.prepare_net(self.net)
     
     def format_output(self, output):
@@ -285,7 +288,7 @@ class DRAGNNMaster(nn.Module):
             output.requires_grad_()
             return output
     
-    def forward(self, input_layer):
+    def forward(self, input_layer_list):
         self.build_net(input_layer)
         for c in self._modules:
             module = self._modules[c]

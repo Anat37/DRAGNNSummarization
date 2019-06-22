@@ -50,18 +50,18 @@ class DRAGNNDecoderMaster(DRAGNNMaster):
         
         return self.format_output(self.net.get_layer(output_layer_name).hiddens)
         
-    def train_run(self, input_layer, target_layer):
+    def train_run(self, input_layer_list, target_layer):
         for module in self.decoder_list:
             module.set_beam_search(False)
             module.set_solid(True)
             if module._rec._is_first:
                 module._rec._input_layer = target_layer.name
         
-        self.build_net(input_layer)
-        self.net.add_layer(target_layer)   
+        self.build_net(input_layer_list)
+        self.net.add_layer(target_layer) 
         return self.forward(self.decoder_list[-1].name)
     
-    def eval_run_encoder(self, input_layer, beam_search = True): #TODO
+    def eval_run_encoder(self, input_layer_list, beam_search = True): #TODO
         if beam_search:
             self.decoder_input_layer = InputLayerWithBeamState("decoder_input_layer_beam", False, [], [])
         else:
@@ -73,7 +73,7 @@ class DRAGNNDecoderMaster(DRAGNNMaster):
             if module._rec._is_first:
                 module._rec._input_layer = self.decoder_input_layer.name
         
-        self.build_net(input_layer)
+        self.build_net(input_layer_list)
         self.net.add_layer(self.decoder_input_layer)
         self.decoder_state = 0
         return self.forward_encoder()

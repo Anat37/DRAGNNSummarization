@@ -1,72 +1,4 @@
 from main import *
-
-class LSTMState(ComponentLayerState):
-        
-    def reset(self):
-        super().reset()
-        self.states = []
-        
-    def add(self, token):
-        token, state = token
-        if self.is_solid:
-            self.hiddens = token
-            self.states.append(state)
-        else:
-            self.hiddens.append(token)
-            #print(self.hiddens[-1].shape)
-            self.states.append(state)
-        
-    def get_last_state(self):
-        return self.states[-1]
-    
-    def rearrange_last(self, ids, dim = 0):
-        new_hiddens = torch.index_select(self.hiddens[-1], 0, ids)
-        #new_states = torch.index_select(self.states[-1], 1, ids)
-        self.hiddens.pop(-1)
-        self.hiddens.append(new_hiddens)
-        #self.states.pop(-1)
-        #self.states.append(new_states)
-        
-class PonterLSTMState(LSTMState):
-        
-    def reset(self):
-        super().reset()
-        self.distrib = []
-        self.pgen = []
-        
-    def add(self, token):
-        token, state, distrib, pgen = token
-        if self.is_solid:
-            self.hiddens = token
-            self.states.append(state)
-            self.distrib = distrib
-            self.pgen = pgen
-        else:
-            self.hiddens.append(token.squeeze(0))
-            self.states.append(state)
-            self.distrib.append(distrib)
-            self.pgen.append(pgen)
-        
-    def get_last_distrib(self):
-        return self.distrib[-1]
-    
-    def get_last_pgen(self):
-        return self.pgen[-1]
-    
-    def get_full_distrib(self):
-        return self.distrib
-    
-    def get_full_pgen(self):
-        return self.pgen
-    
-    def rearrange_last(self, ids, dim=0):
-        super().rearrange_last(ids)
-        new_hiddens = torch.index_select(self.distrib[-1], 0, ids)
-        self.distrib.pop(-1)
-        self.distrib.append(new_hiddens)
-        new_hiddens = torch.index_select(self.pgen[-1], 0, ids)
-        self.pgen.pop(-1)
-        self.pgen.append(new_hiddens)
         
 class HorizontalRecurrent():
     def __init__(self, input_name, self_name, is_first):
@@ -83,7 +15,8 @@ class HorizontalRecurrent():
                 inputs = torch.stack(inputs)
                 inputs.requires_grad_()
         else:
-            inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)
+            #inputs = net.get_value_by_name(self._input_layer, 1, self._self_name)
+            inputs = net.get_last(self._input_layer)
         return inputs
         
     def get(self, state, net, is_solid, batch_size, hidden_size):
@@ -246,7 +179,7 @@ class CoverageAttentionTBRU(AbstractTBRU):
             f_att = torch.softmax(relevance, 0)
             #print(f_att.shape)
             if not self._mask_layer is None:
-                mask = self._mask_layer.get_all()
+                mask = net.get_layer(self._mask_layer).get_all()
                 f_att = f_att * mask
             #print(f_att.shape)
             coverage = coverage + f_att
@@ -337,12 +270,87 @@ class LSTMTBRU(AbstractTBRU):
             net.add(output, self.name)
             net.add(cstate.squeeze(0), self._state_name)
         return state, output
-    
+
     def create_layer(self, net):
         comp_layer = ComponentLayerState(self.name, self._is_solid)
         net.add_layer(comp_layer)
         comp_layer = ComponentLayerState(self._state_name, False)
         net.add_layer(comp_layer)
+        
+class HorizontalConnector():
+    def __init__(self, input_layers, output_layers):
+        self.input_layers = input_layers
+        self.output_layers = output_layers
+   
+    def forward(self, net):
+        for i, l in enumerate(self.input_layers):
+            if l is not None:
+                hidden = net.get_last(l)
+                net.add(self.output_layers[i], hidden)
+                
+        
+class BiLSTMTBRU(AbstractTBRU):
+    def __init__(self, name, state_name, input_size, hidden_dim, input_layer, is_solid=False, input_hidden_layer=None, input_state_layer=None,  is_first=False, bidirectional=False, solid_modifiable=True):
+        super().__init__(name, (1,), is_solid, solid_modifiable)
+        
+        self._connector = HorizontalConnector([input_hidden_layer, input_state_layer],
+                                              [name, state_name])
+        self._rec = TaggerRecurrent(input_layer, name, is_first)
+        self._hidden_rec = HorizontalRecurrent(name, name, False)
+        self._state_name = state_name
+        self._hidden_dim = hidden_dim
+        self._cstate = HorizontalRecurrent(state_name, name, False)
+        self._rnn = nn.LSTM(input_size, hidden_dim, bidirectional=bidirectional)
+        self._mult = 2 if bidirectional else 1
+
+    def forward(self, state, net):
+        inputs = self._rec.get(state, net, self._is_solid)
+        if inputs is None:
+            return (state, None)
+        
+        if not self._is_solid:
+            if inputs.dim() < 3:
+                inputs = inputs.unsqueeze(0)
+        
+        if state == 0:
+            self._connector.forward(net)
+            
+        #print(inputs.shape)
+        cstate = self._cstate.get(state, net, self._is_solid, inputs.shape[1], self._hidden_dim * self._mult)
+        #cstate = cstate.unsqueeze(0)
+        cstate = self.transform_hidden(cstate.unsqueeze(0))
+        
+        hidden = self._hidden_rec.get(state, net, self._is_solid, inputs.shape[1], self._hidden_dim * self._mult)
+        hidden = self.transform_hidden(hidden.unsqueeze(0))
+        hidden = (hidden, cstate)  
+        output, (hidden, cstate) = self._rnn(inputs, hidden)
+        
+        if not self._is_solid:
+            output = output.squeeze(0)
+            
+        if output is not None:
+            net.add(output, self.name)
+            net.add(self.pack_hidden(cstate).squeeze(0), self._state_name)
+        return state, output
+    
+    def transform_hidden(self, hidden):
+        if self._mult > 1:
+            vhidden = hidden.view(hidden.shape[1], self._mult, self._hidden_dim)
+            hidden = vhidden.transpose(0, 1).contiguous()
+        return hidden
+    
+    def pack_hidden(self, hidden):
+        if self._mult > 1:
+            vhidden = hidden.transpose(0, 1).contiguous()
+            hidden = vhidden.view(1, hidden.shape[1], self._mult * self._hidden_dim)
+        return hidden
+    
+    def create_layer(self, net):
+        comp_layer = ComponentLayerState(self.name, self._is_solid)
+        net.add_layer(comp_layer)
+        comp_layer = ComponentLayerState(self._state_name, self._is_solid)
+        net.add_layer(comp_layer)
+        
                
 class PointerTBRU(AbstractTBRU):
     def __init__(self, name, is_solid, input_size, vocab_size, input_attention_layer, input_context_layer, input_distibution_layer, input_decoder_layer, input_encoder_layer, input_lstm_layer, lstm_state_layer, solid_modifiable=True):
@@ -423,6 +431,31 @@ class PointerTBRU(AbstractTBRU):
         if vocab_dist is not None:
             net.add(vocab_dist, self.name)
         return state, vocab_dist
+    
+class UnknownVocabComputer(nn.Module):
+    def __init__(self, vocab_size, unk_idx):
+        super().__init__()
+        
+        self._vocab_size = vocab_size
+        self._unk_idx = unk_idx
+
+    def forward(self, state, input_token):
+        if input_token is None:
+            return state, None
+        #print(input_token.shape)
+        hidden = input_token.clone().detach()
+        #print(hidden.shape)
+        if len(hidden.shape) == 2:
+            
+            for i in range(hidden.shape[0]):
+                for j in range(hidden.shape[1]):
+                    if hidden[i, j] >= self._vocab_size:
+                        hidden[i, j] = self._unk_idx;
+        else:
+            for i in range(hidden.shape[0]):
+                if hidden[i] >= self._vocab_size:
+                    hidden[i] = self._unk_idx;
+        return state, hidden
         
 class InputLayerWithBeamState(ComponentLayerState):
     def __init__(self, name, is_solid, inputs, beam_id):

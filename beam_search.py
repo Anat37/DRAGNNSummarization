@@ -52,7 +52,7 @@ class Hypothesis(object):
         return self.prob / len(self.tokens)
 
 
-def run_beam_search(model, vocab, article, beam_size, max_len):
+def run_beam_search(model, vocab, article_input, beam_size, max_len):
     """Performs beam search decoding on the given example.
     Args:
     sess: a tf.Session
@@ -68,9 +68,8 @@ def run_beam_search(model, vocab, article, beam_size, max_len):
     #beam_ids = [0]
     #probs = [1.]
     #result = np.array([[]*beam_width])
-    X_batch = LongTensor(article)
-    inputs = InputLayerState("input", True, X_batch)
-    model.eval_run_encoder(inputs)
+    
+    model.eval_run_encoder(article_input)
     
 
     # Initialize beam_size-many hyptheses
@@ -92,6 +91,8 @@ def run_beam_search(model, vocab, article, beam_size, max_len):
         num_orig_hyps = len(hyps) # On the first step, we only had one original hypothesis (the initial hypothesis). On subsequent steps, all original hypotheses are distinct.
         for i in range(num_orig_hyps):
             values, indices = hiddens[i].topk(beam_size * 2)
+            mask = (indices < VOCAB_SIZE).long()
+            indices = indices * mask
             values = torch.log(values)
             #print(indices)
             h = hyps[i]
